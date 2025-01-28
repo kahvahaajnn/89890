@@ -4,7 +4,7 @@ from telegram.ext import Application, CommandHandler, CallbackContext
 import os
 
 # Configuration
-TELEGRAM_BOT_TOKEN = ("8016978575:AAGtZq2YIQKIdUuDsx-tb8APm5_SPystyTs")  # Fetch token from environment variable
+TELEGRAM_BOT_TOKEN = ("7819992909:AAHn51FAfPId42gmKUT5wPmCoyC4_g9OeN0")  # Fetch token from environment variable
 ADMIN_USER_ID = 1662672529
 APPROVED_IDS_FILE = 'approved_ids.txt'
 CHANNEL_ID = "@GODxCHES826wyhwij"  # Replace with your channel username
@@ -165,7 +165,7 @@ async def run_attack(chat_id, ip, port, time, context):
     """Simulate an attack process."""
     try:
         process = await asyncio.create_subprocess_shell(
-            f"./soul {ip} {port} {time} 500",
+            f"./xxx {ip} {port} {time} 500",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE
         )
