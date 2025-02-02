@@ -8,7 +8,7 @@
 #include <signal.h>
 #include <time.h>
 
-#define EXPIRATION_YEAR 2025
+#define EXPIRATION_YEAR 2026
 #define EXPIRATION_MONTH 1
 #define EXPIRATION_DAY 10
 
